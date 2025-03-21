@@ -5,15 +5,15 @@ import (
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
-	autoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-
-	tasksv1alpha1 "github.com/thaliph/k8s-ctrl/api/v1alpha1"
-	"github.com/thaliph/k8s-ctrl/controllers"
+	
+	finopsv1 "github.com/alexismerle/k8s-ctrl/api/v1"
+	"github.com/alexismerle/k8s-ctrl/controllers"
 )
 
 var (
@@ -22,9 +22,9 @@ var (
 )
 
 func init() {
-	_ = clientgoscheme.AddToScheme(scheme)
-	_ = tasksv1alpha1.AddToScheme(scheme)
-	_ = autoscalingv1.AddToScheme(scheme) // Add VPA scheme
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(finopsv1.AddToScheme(scheme))
+	//+kubebuilder:scaffold:scheme
 }
 
 func main() {
@@ -50,19 +50,22 @@ func main() {
 		Port:                   9443,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "tasks-controller.thaliph.com",
+		LeaderElectionID:       "59b178b9.finops.example.com",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
-	// Set up the FinOps controller
-	finopsReconciler := controllers.NewFinOpsReconciler(mgr.GetClient(), mgr.GetScheme())
-	if err = finopsReconciler.SetupWithManager(mgr); err != nil {
+	if err = (&controllers.FinOpsReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("finops-controller"),
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FinOps")
 		os.Exit(1)
 	}
+	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

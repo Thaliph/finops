@@ -1,0 +1,11 @@
+apiVersion: finops.example.com/v1
+kind: FinOps
+metadata:
+  name: finops-sample
+spec:
+  repository: "your-github-username/your-repo"
+  path: "kubernetes"
+  fileName: "resources.yaml"
+  vpaRef: "default/app-vpa"  # Reference to the VPA in namespace/name format
+  secretRef: "github-credentials"  # Reference to GitHub credentials secret
+  schedule: "5m"  # Check every 5 minutes

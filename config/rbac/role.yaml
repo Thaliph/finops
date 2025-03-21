@@ -1,0 +1,54 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: finops-manager-role
+rules:
+- apiGroups:
+  - finops.example.com
+  resources:
+  - finops
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - finops.example.com
+  resources:
+  - finops/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - finops.example.com
+  resources:
+  - finops/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - autoscaling.k8s.io
+  resources:
+  - verticalpodautoscalers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
