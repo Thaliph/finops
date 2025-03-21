@@ -48,7 +48,7 @@ type FinOpsStatus struct {
 type ResourceRecommendation struct {
 	// CPU recommendation in millicores
 	CPU string `json:"cpu,omitempty"`
-	
+
 	// Memory recommendation in bytes
 	Memory string `json:"memory,omitempty"`
 }

@@ -26,6 +26,10 @@ help: ## Display this help.
 
 ##@ Development
 
+.PHONY: tidy
+tidy: ## Run go mod tidy against code.
+	go mod tidy
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -38,14 +42,27 @@ vet: ## Run go vet against code.
 test: fmt vet ## Run tests.
 	go test ./... -coverprofile cover.out
 
+.PHONY: generate
+generate: tidy ## Generate code (DeepCopy functions, etc).
+	chmod +x hack/update-codegen.sh
+	./hack/update-codegen.sh
+
 ##@ Build
 
 .PHONY: build
-build: fmt vet ## Build manager binary.
+build: generate fmt vet ## Build manager binary.
 	go build -o bin/manager main.go
 
+# Use a direct run command that doesn't depend on generation to avoid the segfault
+.PHONY: run-direct
+run-direct: ## Run the controller without code generation (when manually implementing DeepCopy).
+	go run ./main.go
+
 .PHONY: run
-run: fmt vet ## Run a controller from your host.
+run: ## Run a controller from your host.
+	$(MAKE) tidy
+	$(MAKE) fmt
+	$(MAKE) vet
 	go run ./main.go
 
 ##@ Deployment
@@ -86,7 +103,7 @@ apply-crd: ## Apply the CRD to the kind cluster
 
 .PHONY: deploy-sample
 deploy-sample: ## Deploy a sample FinOps resource
-	kubectl apply -f config/samples/finops_v1_finops.yaml
+	kubectl apply -f config/samples/
 
 .PHONY: deploy-secret
 deploy-secret: ## Deploy a sample GitHub secret

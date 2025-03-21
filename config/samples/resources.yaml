@@ -2,7 +2,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: app
+  name: sample-deployment
   namespace: default
 spec:
   replicas: 1
@@ -24,16 +24,3 @@ spec:
           limits:
             cpu: "500m"
             memory: "256Mi"
----
-apiVersion: autoscaling.k8s.io/v1
-kind: VerticalPodAutoscaler
-metadata:
-  name: app-vpa
-  namespace: default
-spec:
-  targetRef:
-    apiVersion: "apps/v1"
-    kind: Deployment
-    name: app
-  updatePolicy:
-    updateMode: "off"
