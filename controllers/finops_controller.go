@@ -248,7 +248,8 @@ func (r *FinOpsReconciler) updateGitHubRepository(ctx context.Context, finops fi
 		return "", fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	branchName := fmt.Sprintf("finops-update-%s", time.Now().Format("20060102-150405"))
+	// Create a branch name using the finops resource name
+	branchName := fmt.Sprintf("resize/%s", finops.Name)
 	log.Info("Creating branch", "branch", branchName)
 
 	// Create and checkout new branch
@@ -277,29 +278,52 @@ func (r *FinOpsReconciler) updateGitHubRepository(ctx context.Context, finops fi
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// Instead of overwriting, parse line-by-line and only update CPU/memory requests, remove CPU limit line, and sync memory limit=request.
-	lines := strings.Split(string(existingContent), "\n")
-	for i, line := range lines {
-		// Check if it's a yaml manifest or a patch (detect 'op:' line for patch).
-		// Then match resources->requests->cpu/memory and remove cpu limit line if found.
-		if strings.Contains(line, "cpu:") && strings.Contains(line, "requests:") {
-			lines[i] = strings.ReplaceAll(line, extractCPU(line), recommendation.CPU)
-		}
-		if strings.Contains(line, "memory:") && strings.Contains(line, "requests:") {
-			lines[i] = strings.ReplaceAll(line, extractMem(line), recommendation.Memory)
-		}
-		if strings.Contains(line, "limits:") && strings.Contains(line, "cpu:") {
-			// Remove or blank out the CPU limit line
-			lines[i] = ""
-		}
-		if strings.Contains(line, "limits:") && strings.Contains(line, "memory:") {
-			lines[i] = strings.ReplaceAll(line, extractMem(line), recommendation.Memory)
+	// Process the file content to update the resource values
+	newContent := updateResourceValues(string(existingContent), recommendation.CPU, recommendation.Memory)
+	
+	log.Info("File update details", 
+		"oldSize", len(existingContent), 
+		"newSize", len(newContent), 
+		"cpu", recommendation.CPU, 
+		"memory", recommendation.Memory)
+	
+	if err := os.WriteFile(filePath, []byte(newContent), 0644); err != nil {
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+
+	// For debugging, print the status of the file before and after changes
+	log.Info("File contents before changes", "path", filePath, "exists", existingContent != nil, "size", len(existingContent))
+
+	// After updating content
+	// Debug the git operations
+	status, err := wt.Status()
+	if err != nil {
+		log.Error(err, "Failed to get git status")
+	} else {
+		for path, fileStatus := range status {
+			log.Info("Git file status", "path", path, "staging", fileStatus.Staging, "worktree", fileStatus.Worktree)
 		}
 	}
 
-	newContent := []byte(strings.Join(lines, "\n"))
-	if err := os.WriteFile(filePath, newContent, 0644); err != nil {
-		return "", fmt.Errorf("failed to write file: %w", err)
+	// Make sure the file is added with its full path
+	relativePath := filepath.Join(finops.Spec.Path, finops.Spec.FileName)
+	log.Info("Adding file to git", "relativePath", relativePath)
+	if _, err := wt.Add(relativePath); err != nil {
+		return "", fmt.Errorf("failed to add file: %w", err)
+	}
+
+	// Verify file is staged
+	status, _ = wt.Status()
+	fileAdded := false
+	for path, fileStatus := range status {
+		if strings.Contains(path, finops.Spec.FileName) {
+			fileAdded = true
+			log.Info("File staged successfully", "path", path, "staging", fileStatus.Staging)
+		}
+	}
+
+	if !fileAdded {
+		log.Info("WARNING: File doesn't appear to be staged properly")
 	}
 
 	// Stage and commit changes
@@ -397,9 +421,9 @@ func (r *FinOpsReconciler) createOrUpdatePR(ctx context.Context, finops finopsv1
 		return prURL, nil
 	}
 
-	// Create new PR
-	title := fmt.Sprintf("Update resource recommendations for %s", finops.Name)
-	body := fmt.Sprintf("This PR was created by the FinOps Operator for resource %s/%s.\n\n%s",
+	// Create new PR with more specific title
+	title := fmt.Sprintf("Resize resources for %s", finops.Name)
+	body := fmt.Sprintf("This PR was created by the FinOps Operator to update resource requirements for %s/%s.\n\n%s",
 		finops.Namespace, finops.Name, commitMsg)
 
 	pr, _, err := client.PullRequests.Create(ctx, owner, repoName, &github.NewPullRequest{
@@ -433,9 +457,34 @@ func containsString(slice []string, s string) bool {
 	return false
 }
 
-// Helper functions (example placeholders, you’d implement real parsing):
-func extractCPU(line string) string { return "100m" }
-func extractMem(line string) string { return "128Mi" }
+// Helper functions for resource value extraction:
+func extractCPU(line string) string { 
+    // Extract CPU value from a line like "    cpu: 100m" or similar
+    parts := strings.Split(line, "cpu:")
+    if len(parts) < 2 {
+        return "100m" // Default if can't extract
+    }
+    
+    // Get the value part and trim spaces/quotes
+    value := strings.TrimSpace(parts[1])
+    value = strings.Trim(value, "\"'")
+    
+    return value
+}
+
+func extractMem(line string) string {
+    // Extract memory value from a line like "    memory: 128Mi" or similar
+    parts := strings.Split(line, "memory:")
+    if len(parts) < 2 {
+        return "128Mi" // Default if can't extract
+    }
+    
+    // Get the value part and trim spaces/quotes
+    value := strings.TrimSpace(parts[1])
+    value = strings.Trim(value, "\"'")
+    
+    return value
+}
 
 // Helper to extract PR number from URL
 func extractPRNumber(prURL string) int {
@@ -448,4 +497,95 @@ func extractPRNumber(prURL string) int {
 		}
 	}
 	return -1
+}
+
+// updateResourceValues updates CPU requests, memory requests/limits and removes CPU limits in YAML content
+func updateResourceValues(content, cpuValue, memoryValue string) string {
+    if content == "" {
+        // If file doesn't exist, create a minimal valid YAML
+        return fmt.Sprintf(`# Generated by FinOps Operator
+resources:
+  requests:
+    cpu: %s
+    memory: %s
+  limits:
+    memory: %s
+`, cpuValue, memoryValue, memoryValue)
+    }
+
+    // Split content into lines for processing
+    lines := strings.Split(content, "\n")
+    
+    // Track the state of where we are in the YAML
+    inRequests := false
+    inLimits := false
+    inValue := false // For kustomize patches
+    
+    // Process line by line
+    for i, line := range lines {
+        trimmedLine := strings.TrimSpace(line)
+        
+        // Detect structure based on indentation and content
+        if strings.HasPrefix(trimmedLine, "requests:") {
+            inRequests = true
+            inLimits = false
+            continue
+        } else if strings.HasPrefix(trimmedLine, "limits:") {
+            inRequests = false
+            inLimits = true
+            continue
+        } else if strings.Contains(trimmedLine, "value:") {
+            inValue = true
+            continue
+        }
+        
+        // Handle CPU request
+        if (inRequests || (inValue && strings.Contains(line, "requests:"))) && 
+           strings.Contains(trimmedLine, "cpu:") {
+            indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+            lines[i] = indent + "cpu: \"" + cpuValue + "\""
+            continue
+        }
+        
+        // Handle memory request
+        if (inRequests || (inValue && strings.Contains(line, "requests:"))) && 
+           strings.Contains(trimmedLine, "memory:") {
+            indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+            lines[i] = indent + "memory: \"" + memoryValue + "\""
+            continue
+        }
+        
+        // Handle CPU limit (remove it)
+        if (inLimits || (inValue && strings.Contains(line, "limits:"))) && 
+           strings.Contains(trimmedLine, "cpu:") {
+            lines[i] = "" // Remove this line
+            continue
+        }
+        
+        // Handle memory limit
+        if (inLimits || (inValue && strings.Contains(line, "limits:"))) && 
+           strings.Contains(trimmedLine, "memory:") {
+            indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+            lines[i] = indent + "memory: \"" + memoryValue + "\""
+            continue
+        }
+    }
+    
+    // Clean up empty lines and consecutive empty lines
+    var cleanedLines []string
+    wasEmpty := false
+    
+    for _, line := range lines {
+        if line == "" {
+            if !wasEmpty {
+                cleanedLines = append(cleanedLines, line)
+                wasEmpty = true
+            }
+        } else {
+            cleanedLines = append(cleanedLines, line)
+            wasEmpty = false
+        }
+    }
+    
+    return strings.Join(cleanedLines, "\n")
 }
