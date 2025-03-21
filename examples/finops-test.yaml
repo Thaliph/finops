@@ -1,0 +1,21 @@
+apiVersion: tasks.thaliph.com/v1alpha1
+kind: FinOps
+metadata:
+  name: test-finops
+  namespace: default
+spec:
+  # Replace with your actual repository
+  githubRepository: "YOUR_GITHUB_USERNAME/test-repo"
+  # Path to the deployment file in your repository
+  filePath: "kubernetes"
+  fileName: "deployment.yaml"
+  # Reference to the VPA we created
+  vpaReference:
+    name: "test-app-vpa"
+    namespace: "default"
+  # Reference to the GitHub secret we created
+  githubSecretRef:
+    name: "github-credentials"
+    namespace: "default"
+  # Run every 5 minutes for testing
+  schedule: "*/5 * * * *"

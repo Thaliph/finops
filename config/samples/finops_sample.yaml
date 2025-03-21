@@ -1,0 +1,17 @@
+apiVersion: tasks.thaliph.com/v1alpha1
+kind: FinOps
+metadata:
+  name: finops-sample
+spec:
+  githubRepository: "thaliph/my-app-config"
+  filePath: "kubernetes/resources"
+  fileName: "deployment.yaml"
+  vpaReference:
+    name: "my-app-vpa"
+    namespace: "default"
+  githubSecretRef:
+    name: "github-credentials"
+    namespace: "default"
+    usernameKey: "username"
+    tokenKey: "token"
+  schedule: "0 0 * * *"  # Run at midnight every day
