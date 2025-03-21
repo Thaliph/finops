@@ -14,6 +14,7 @@ import (
 
 	finopsv1 "github.com/alexismerle/k8s-ctrl/api/v1"
 	"github.com/alexismerle/k8s-ctrl/controllers"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
 
 var (
@@ -24,6 +25,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(finopsv1.AddToScheme(scheme))
+	utilruntime.Must(vpav1.AddToScheme(scheme)) // Register VPA scheme
 	//+kubebuilder:scaffold:scheme
 }
 

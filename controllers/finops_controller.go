@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"strconv"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -26,7 +27,7 @@ import (
 
 	finopsv1 "github.com/alexismerle/k8s-ctrl/api/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"gopkg.in/yaml.v2"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
 
 const (
@@ -165,13 +166,21 @@ func (r *FinOpsReconciler) getVPARecommendation(ctx context.Context, finops fino
 	// Get VPA object
 	log.Info("Getting VPA recommendation", "namespace", vpaNamespace, "name", vpaName)
 
-	// In a real implementation, we would use the autoscaling.k8s.io API to get VPA recommendations
-	// For this example, we'll return dummy values as placeholder
-	// In production, you'd query the VPA API and extract real recommendations
+	var vpa vpav1.VerticalPodAutoscaler
+	if err := r.Get(ctx, types.NamespacedName{Namespace: vpaNamespace, Name: vpaName}, &vpa); err != nil {
+		return nil, fmt.Errorf("failed to get VPA: %w", err)
+	}
 
+	if len(vpa.Status.Recommendation.ContainerRecommendations) == 0 {
+		log.Info("No VPA container recommendations, returning empty values")
+		return &finopsv1.ResourceRecommendation{}, nil
+	}
+
+	cpuQty := vpa.Status.Recommendation.ContainerRecommendations[0].Target["cpu"]
+	memQty := vpa.Status.Recommendation.ContainerRecommendations[0].Target["memory"]
 	return &finopsv1.ResourceRecommendation{
-		CPU:    "500m",
-		Memory: "256Mi",
+		CPU:    cpuQty.String(),
+		Memory: memQty.String(),
 	}, nil
 }
 
@@ -268,68 +277,85 @@ func (r *FinOpsReconciler) updateGitHubRepository(ctx context.Context, finops fi
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 
-	type resourceYaml struct {
-		Resources struct {
-			Requests struct {
-				CPU    string `yaml:"cpu,omitempty"`
-				Memory string `yaml:"memory,omitempty"`
-			} `yaml:"requests,omitempty"`
-			Limits struct {
-				Memory string `yaml:"memory,omitempty"`
-			} `yaml:"limits,omitempty"`
-		} `yaml:"resources,omitempty"`
-	}
-
-	var ry resourceYaml
-	if len(existingContent) > 0 {
-		if err := yaml.Unmarshal(existingContent, &ry); err != nil {
-			log.Info("Warning: could not parse existing YAML, overwriting relevant fields", "error", err)
-			ry = resourceYaml{}
+	// Instead of overwriting, parse line-by-line and only update CPU/memory requests, remove CPU limit line, and sync memory limit=request.
+	lines := strings.Split(string(existingContent), "\n")
+	for i, line := range lines {
+		// Check if it's a yaml manifest or a patch (detect 'op:' line for patch).
+		// Then match resources->requests->cpu/memory and remove cpu limit line if found.
+		if strings.Contains(line, "cpu:") && strings.Contains(line, "requests:") {
+			lines[i] = strings.ReplaceAll(line, extractCPU(line), recommendation.CPU)
+		}
+		if strings.Contains(line, "memory:") && strings.Contains(line, "requests:") {
+			lines[i] = strings.ReplaceAll(line, extractMem(line), recommendation.Memory)
+		}
+		if strings.Contains(line, "limits:") && strings.Contains(line, "cpu:") {
+			// Remove or blank out the CPU limit line
+			lines[i] = ""
+		}
+		if strings.Contains(line, "limits:") && strings.Contains(line, "memory:") {
+			lines[i] = strings.ReplaceAll(line, extractMem(line), recommendation.Memory)
 		}
 	}
 
-	// Wait for valid recommendation (skip if CPU or Memory is empty)
-	commitMsg := "" // Define commitMsg so it's available for PR creation
+	newContent := []byte(strings.Join(lines, "\n"))
+	if err := os.WriteFile(filePath, newContent, 0644); err != nil {
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
 
-	if recommendation.CPU == "" || recommendation.Memory == "" {
-		log.Info("No valid VPA recommendation, skipping file update")
-	} else {
-		ry.Resources.Requests.CPU = recommendation.CPU
-		ry.Resources.Requests.Memory = recommendation.Memory
-		ry.Resources.Limits.Memory = recommendation.Memory
-		newContent, err := yaml.Marshal(ry)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal updated YAML: %w", err)
-		}
-		if err := os.WriteFile(filePath, newContent, 0644); err != nil {
-			return "", fmt.Errorf("failed to write file: %w", err)
-		}
+	// Stage and commit changes
+	if _, err := wt.Add(filepath.Join(finops.Spec.Path, finops.Spec.FileName)); err != nil {
+		return "", fmt.Errorf("failed to add file: %w", err)
+	}
+	commitMsg := fmt.Sprintf("Update resource recommendations (CPU: %s, Memory: %s)", recommendation.CPU, recommendation.Memory)
+	_, err = wt.Commit(commitMsg, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "FinOps Operator",
+			Email: "finops@example.com",
+			When:  time.Now(),
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to commit changes: %w", err)
+	}
 
-		// Stage and commit changes
-		if _, err := wt.Add(filepath.Join(finops.Spec.Path, finops.Spec.FileName)); err != nil {
-			return "", fmt.Errorf("failed to add file: %w", err)
-		}
-		commitMsg = fmt.Sprintf("Update resource recommendations (CPU: %s, Memory: %s)", recommendation.CPU, recommendation.Memory)
-		_, err = wt.Commit(commitMsg, &git.CommitOptions{
-			Author: &object.Signature{
-				Name:  "FinOps Operator",
-				Email: "finops@example.com",
-				When:  time.Now(),
-			},
-		})
-		if err != nil {
-			return "", fmt.Errorf("failed to commit changes: %w", err)
-		}
+	log.Info("Pushing changes")
+	err = repo.Push(&git.PushOptions{
+		Auth: &http.BasicAuth{
+			Username: creds.Username,
+			Password: creds.Token,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to push changes: %w", err)
+	}
 
-		log.Info("Pushing changes")
-		err = repo.Push(&git.PushOptions{
-			Auth: &http.BasicAuth{
-				Username: creds.Username,
-				Password: creds.Token,
-			},
-		})
-		if err != nil {
-			return "", fmt.Errorf("failed to push changes: %w", err)
+	// Check if PR already exists and if it's still open
+	if finops.Status.CurrentPR != "" {
+		// Extract PR number from URL
+		prURL := finops.Status.CurrentPR
+		prNumber := extractPRNumber(prURL)
+		log.Info("PR might exist, checking status", "URL", prURL, "Number", prNumber)
+		
+		if prNumber > 0 {
+			parts := strings.Split(finops.Spec.Repository, "/")
+			if len(parts) == 2 {
+				owner, repoName := parts[0], parts[1]
+				
+				// Create GitHub client
+				ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: creds.Token})
+				tc := oauth2.NewClient(ctx, ts)
+				client := github.NewClient(tc)
+				
+				// Check PR status
+				pr, _, err := client.PullRequests.Get(ctx, owner, repoName, prNumber)
+				if err == nil && pr != nil && pr.GetState() == "closed" {
+					log.Info("Found existing PR but it's closed, will create a new one")
+					finops.Status.CurrentPR = "" // Clear the current PR so a new one is created
+				} else if err == nil && pr != nil && pr.GetState() == "open" {
+					log.Info("Found existing open PR, will update it")
+					// Continue using the same PR
+				}
+			}
 		}
 	}
 
@@ -405,4 +431,21 @@ func containsString(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// Helper functions (example placeholders, you’d implement real parsing):
+func extractCPU(line string) string { return "100m" }
+func extractMem(line string) string { return "128Mi" }
+
+// Helper to extract PR number from URL
+func extractPRNumber(prURL string) int {
+	parts := strings.Split(prURL, "/")
+	if len(parts) > 0 {
+		numStr := parts[len(parts)-1]
+		num, err := strconv.Atoi(numStr)
+		if err == nil {
+			return num
+		}
+	}
+	return -1
 }

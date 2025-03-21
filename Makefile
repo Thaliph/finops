@@ -55,7 +55,7 @@ build: generate fmt vet ## Build manager binary.
 
 # Use a direct run command that doesn't depend on generation to avoid the segfault
 .PHONY: run-direct
-run-direct: ## Run the controller without code generation (when manually implementing DeepCopy).
+run-direct: fix-deps ## Run the controller without code generation (when manually implementing DeepCopy).
 	go run ./main.go
 
 .PHONY: run
@@ -117,3 +117,8 @@ deploy-secret: ## Deploy a sample GitHub secret
 .PHONY: kind-setup
 kind-setup: kind-create apply-crd deploy-secret deploy-sample ## Setup the kind cluster with all required resources
 	@echo "Kind cluster setup complete"
+
+.PHONY: fix-deps
+fix-deps: ## Fix the go.mod dependency issue
+	go get k8s.io/autoscaler/vertical-pod-autoscaler@v0.12.0
+	go mod tidy

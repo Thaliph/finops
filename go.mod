@@ -1,6 +1,6 @@
 module github.com/alexismerle/k8s-ctrl
 
-go 1.21
+go 1.20
 
 require (
 	github.com/go-git/go-git/v5 v5.10.0
@@ -10,9 +10,9 @@ require (
 	golang.org/x/oauth2 v0.13.0
 	k8s.io/api v0.28.3
 	k8s.io/apimachinery v0.28.3
+	k8s.io/autoscaler/vertical-pod-autoscaler v0.12.0
 	k8s.io/client-go v0.28.3
 	sigs.k8s.io/controller-runtime v0.16.3
-	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
