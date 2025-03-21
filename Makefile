@@ -92,6 +92,9 @@ kind-create: ## Create a kind cluster for testing
 	kind create cluster --name finops-test --config=./hack/kind.yaml || true
 	kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/vpa-release-1.0/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml
 	kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/vpa-release-1.0/vertical-pod-autoscaler/deploy/vpa-rbac.yaml
+	kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/vpa-release-1.0/vertical-pod-autoscaler/deploy/updater-deployment.yaml
+	kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/vpa-release-1.0/vertical-pod-autoscaler/deploy/recommender-deployment.yaml
+	kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/vpa-release-1.0/vertical-pod-autoscaler/deploy/admission-controller-deployment.yaml
 
 .PHONY: kind-delete
 kind-delete: ## Delete the kind cluster

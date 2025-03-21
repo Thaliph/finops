@@ -12,6 +12,7 @@ require (
 	k8s.io/apimachinery v0.28.3
 	k8s.io/client-go v0.28.3
 	sigs.k8s.io/controller-runtime v0.16.3
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
