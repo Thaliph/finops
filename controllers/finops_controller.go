@@ -171,16 +171,44 @@ func (r *FinOpsReconciler) getVPARecommendation(ctx context.Context, finops fino
 		return nil, fmt.Errorf("failed to get VPA: %w", err)
 	}
 
+	// Add more defensive checks to handle nil cases
+	if vpa.Status.Recommendation == nil {
+		log.Info("VPA recommendation is nil, returning empty values")
+		return &finopsv1.ResourceRecommendation{}, nil
+	}
+
 	if len(vpa.Status.Recommendation.ContainerRecommendations) == 0 {
 		log.Info("No VPA container recommendations, returning empty values")
 		return &finopsv1.ResourceRecommendation{}, nil
 	}
 
-	cpuQty := vpa.Status.Recommendation.ContainerRecommendations[0].Target["cpu"]
-	memQty := vpa.Status.Recommendation.ContainerRecommendations[0].Target["memory"]
+	// Get resource recommendations and check if they exist
+	targets := vpa.Status.Recommendation.ContainerRecommendations[0].Target
+	if targets == nil {
+		log.Info("VPA recommendation targets are nil, returning empty values")
+		return &finopsv1.ResourceRecommendation{}, nil
+	}
+
+	// Safely extract CPU and memory values
+	var cpuValue, memValue string
+	if cpuQty, exists := targets["cpu"]; exists {
+		cpuValue = cpuQty.String()
+	} else {
+		log.Info("CPU recommendation not found in VPA")
+		cpuValue = "100m" // Default value if not found
+	}
+
+	if memQty, exists := targets["memory"]; exists {
+		memValue = memQty.String()
+	} else {
+		log.Info("Memory recommendation not found in VPA")
+		memValue = "128Mi" // Default value if not found
+	}
+
+	log.Info("Found VPA recommendations", "cpu", cpuValue, "memory", memValue)
 	return &finopsv1.ResourceRecommendation{
-		CPU:    cpuQty.String(),
-		Memory: memQty.String(),
+		CPU:    cpuValue,
+		Memory: memValue,
 	}, nil
 }
 
@@ -577,7 +605,7 @@ resources:
     
     for _, line := range lines {
         if line == "" {
-            if !wasEmpty {
+            if (!wasEmpty) {
                 cleanedLines = append(cleanedLines, line)
                 wasEmpty = true
             }

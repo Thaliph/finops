@@ -122,3 +122,85 @@ kind-setup: kind-create apply-crd deploy-secret deploy-sample ## Setup the kind 
 fix-deps: ## Fix the go.mod dependency issue
 	go get k8s.io/autoscaler/vertical-pod-autoscaler@v0.12.0
 	go mod tidy
+
+##@ Docker
+
+.PHONY: docker-build
+docker-build: ## Build docker image with the manager.
+	docker build -t ${IMG} .
+
+.PHONY: docker-push
+docker-push: ## Push docker image with the manager.
+	docker push ${IMG}
+
+.PHONY: kind-load
+kind-load: docker-build ## Load docker image to Kind cluster
+	kind load docker-image ${IMG} --name finops-test
+
+##@ Deployment with Docker
+
+.PHONY: deploy-manager
+deploy-manager: manifests kind-load ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	@echo "Creating namespace if it doesn't exist..."
+	kubectl create namespace finops-system || true
+	@echo "Creating service account..."
+	cat <<EOF | kubectl apply -f -
+	apiVersion: v1
+	kind: ServiceAccount
+	metadata:
+	  name: finops-controller
+	  namespace: finops-system
+	EOF
+	@echo "Creating cluster role binding..."
+	cat <<EOF | kubectl apply -f -
+	apiVersion: rbac.authorization.k8s.io/v1
+	kind: ClusterRoleBinding
+	metadata:
+	  name: finops-manager-rolebinding
+	roleRef:
+	  apiGroup: rbac.authorization.k8s.io
+	  kind: ClusterRole
+	  name: finops-manager-role
+	subjects:
+	- kind: ServiceAccount
+	  name: finops-controller
+	  namespace: finops-system
+	EOF
+	@echo "Deploying controller..."
+	cat <<EOF | kubectl apply -f -
+	apiVersion: apps/v1
+	kind: Deployment
+	metadata:
+	  name: finops-controller
+	  namespace: finops-system
+	  labels:
+	    app: finops-controller
+	spec:
+	  replicas: 1
+	  selector:
+	    matchLabels:
+	      app: finops-controller
+	  template:
+	    metadata:
+	      labels:
+	        app: finops-controller
+	    spec:
+	      serviceAccountName: finops-controller
+	      containers:
+	      - name: manager
+	        image: ${IMG}
+	        args:
+	        - --leader-elect=false
+	        resources:
+	          limits:
+	            cpu: 100m
+	            memory: 128Mi
+	          requests:
+	            cpu: 100m
+	            memory: 64Mi
+	      terminationGracePeriodSeconds: 10
+	EOF
+
+.PHONY: manifests
+manifests: install config/rbac ## Generate manifests e.g. CRD, RBAC etc.
+	@echo "CRD and RBAC manifests already applied"

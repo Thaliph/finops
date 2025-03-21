@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finops-controller
+  labels:
+    app: finops-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: finops-controller
+  template:
+    metadata:
+      labels:
+        app: finops-controller
+    spec:
+      serviceAccountName: finops-controller
+      containers:
+      - name: manager
+        image: controller:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - --leader-elect=false
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 100m
+            memory: 64Mi
+      terminationGracePeriodSeconds: 10
