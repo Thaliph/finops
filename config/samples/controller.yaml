@@ -17,7 +17,7 @@ spec:
       serviceAccountName: finops-controller
       containers:
       - name: manager
-        image: controller:latest
+        image: Thaliph/finops:latest
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect=false

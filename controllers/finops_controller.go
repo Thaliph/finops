@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -260,12 +261,16 @@ func (r *FinOpsReconciler) updateGitHubRepository(ctx context.Context, finops fi
 	repoURL := fmt.Sprintf("https://github.com/%s.git", finops.Spec.Repository)
 	log.Info("Cloning repository", "url", repoURL)
 
+	// Clone with all branches instead of specifying RefSpecs
 	repo, err := git.PlainClone(repoDir, false, &git.CloneOptions{
 		URL: repoURL,
 		Auth: &http.BasicAuth{
 			Username: creds.Username,
 			Password: creds.Token,
 		},
+			// Clone all branches
+		SingleBranch: false,
+		NoCheckout:   false,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to clone repository: %w", err)
@@ -279,15 +284,122 @@ func (r *FinOpsReconciler) updateGitHubRepository(ctx context.Context, finops fi
 
 	// Create a branch name using the finops resource name
 	branchName := fmt.Sprintf("resize/%s", finops.Name)
-	log.Info("Creating branch", "branch", branchName)
-
-	// Create and checkout new branch
-	checkoutOpts := &git.CheckoutOptions{
-		Branch: plumbing.NewBranchReferenceName(branchName),
-		Create: true,
+	log.Info("Working with branch", "branch", branchName)
+	remoteBranchName := "origin/" + branchName
+	
+	// Check if branch exists locally or remotely
+	localBranchExists := false
+	remoteBranchExists := false
+	
+	// Check local branches
+	branches, err := repo.Branches()
+	if err != nil {
+		log.Error(err, "Failed to list branches")
+	} else {
+		err = branches.ForEach(func(branch *plumbing.Reference) error {
+			if branch.Name().Short() == branchName {
+				localBranchExists = true
+				return nil
+			}
+			return nil
+		})
 	}
-	if err := wt.Checkout(checkoutOpts); err != nil {
-		return "", fmt.Errorf("failed to checkout branch: %w", err)
+	
+	// Check remote branches
+	remoteBranches, err := repo.References()
+	if err != nil {
+		log.Error(err, "Failed to list remote references")
+	} else {
+		err = remoteBranches.ForEach(func(branch *plumbing.Reference) error {
+			if branch.Name().String() == "refs/remotes/"+remoteBranchName {
+				remoteBranchExists = true
+				return nil
+			}
+			return nil
+		})
+	}
+
+	// Handle branch checkout or creation
+	if remoteBranchExists {
+		log.Info("Remote branch exists, checking out and pulling latest changes", "branch", branchName)
+		
+		// First checkout to track the remote branch
+		err = wt.Checkout(&git.CheckoutOptions{
+			Branch: plumbing.NewRemoteReferenceName("origin", branchName),
+		})
+		if err != nil {
+			// If checkout fails, try to fetch first
+			fetchErr := repo.Fetch(&git.FetchOptions{
+				RemoteName: "origin",
+				Auth: &http.BasicAuth{
+					Username: creds.Username,
+					Password: creds.Token,
+				},
+			})
+			if fetchErr != nil && fetchErr != git.NoErrAlreadyUpToDate {
+				log.Error(fetchErr, "Failed to fetch latest changes")
+			}
+			
+			// Try checkout again after fetch
+			err = wt.Checkout(&git.CheckoutOptions{
+				Branch: plumbing.NewRemoteReferenceName("origin", branchName),
+			})
+			if err != nil {
+				return "", fmt.Errorf("failed to checkout remote branch after fetch: %w", err)
+			}
+		}
+		
+		// Create and checkout a local branch that tracks the remote - removing the Track field
+		err = wt.Checkout(&git.CheckoutOptions{
+			Branch: plumbing.NewBranchReferenceName(branchName),
+			Create: true,
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to create local tracking branch: %w", err)
+		}
+		
+		// Pull latest changes
+		err = repo.Fetch(&git.FetchOptions{
+			RemoteName: "origin",
+			RefSpecs:   []config.RefSpec{config.RefSpec(fmt.Sprintf("refs/heads/%s:refs/remotes/origin/%s", branchName, branchName))},
+			Auth: &http.BasicAuth{
+				Username: creds.Username,
+				Password: creds.Token,
+			},
+		})
+		if err != nil && err != git.NoErrAlreadyUpToDate {
+			log.Error(err, "Failed to fetch latest changes")
+		}
+		
+		err = wt.Pull(&git.PullOptions{
+			RemoteName: "origin", 
+			Force: false,
+			Auth: &http.BasicAuth{
+				Username: creds.Username,
+				Password: creds.Token,
+			},
+		})
+		if err != nil && err != git.NoErrAlreadyUpToDate {
+			log.Error(err, "Failed to pull latest changes")
+		}
+	} else if localBranchExists {
+		log.Info("Local branch exists but not remote, checking out local", "branch", branchName)
+		err = wt.Checkout(&git.CheckoutOptions{
+			Branch: plumbing.NewBranchReferenceName(branchName),
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to checkout local branch: %w", err)
+		}
+	} else {
+		log.Info("Creating new branch", "branch", branchName)
+		// Create and checkout a new branch
+		err = wt.Checkout(&git.CheckoutOptions{
+			Branch: plumbing.NewBranchReferenceName(branchName),
+			Create: true,
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to create new branch: %w", err)
+		}
 	}
 
 	// Update the file with new recommendations
@@ -377,6 +489,8 @@ func (r *FinOpsReconciler) updateGitHubRepository(ctx context.Context, finops fi
 			Username: creds.Username,
 			Password: creds.Token,
 		},
+		// Use force push to handle non-fast-forward issues
+		Force: true,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to push changes: %w", err)
@@ -444,10 +558,30 @@ func (r *FinOpsReconciler) createOrUpdatePR(ctx context.Context, finops finopsv1
 	if finops.Status.CurrentPR != "" {
 		// Extract PR number from URL
 		prURL = finops.Status.CurrentPR
-		log.Info("PR already exists, will update it", "URL", prURL)
-		// In a real implementation, you would update the existing PR
-		// Here we'll just return the existing PR URL
+		log.Info("PR already exists, will not create a new one", "URL", prURL)
 		return prURL, nil
+	}
+
+	// Check if there's already a PR open for this branch before creating a new one
+	parts = strings.Split(finops.Spec.Repository, "/")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid repository format: %s", finops.Spec.Repository)
+	}
+	owner, repoName = parts[0], parts[1]
+	
+	// List PRs to see if one already exists for this branch
+	listOptions := &github.PullRequestListOptions{
+		State: "open",
+		Head:  branchName, // This should match the name of our branch
+	}
+	existingPrs, _, err := client.PullRequests.List(ctx, owner, repoName, listOptions)
+	if err != nil {
+		log.Error(err, "Error checking for existing PRs")
+	} else if len(existingPrs) > 0 {
+		// We found an existing PR for this branch
+		pr := existingPrs[0]
+		log.Info("Found existing PR for this branch", "number", pr.GetNumber(), "URL", pr.GetHTMLURL())
+		return pr.GetHTMLURL(), nil
 	}
 
 	// Create new PR with more specific title
@@ -462,6 +596,27 @@ func (r *FinOpsReconciler) createOrUpdatePR(ctx context.Context, finops finopsv1
 		Base:  github.String("main"), // Assuming main is the default branch
 	})
 	if err != nil {
+		// Check if this is the 422 error for "A pull request already exists"
+		if strings.Contains(err.Error(), "422") && strings.Contains(err.Error(), "already exists") {
+			// Try to find the PR again - it must exist but we didn't find it earlier
+			listOptions := &github.PullRequestListOptions{
+				State: "all", // Include all PRs, not just open ones
+			}
+			allPrs, _, listErr := client.PullRequests.List(ctx, owner, repoName, listOptions)
+			if listErr == nil {
+				for _, existingPr := range allPrs {
+					// Compare on branch name
+					if existingPr.GetHead().GetRef() == branchName {
+						log.Info("Found existing PR after 422 error", 
+							"number", existingPr.GetNumber(), 
+							"URL", existingPr.GetHTMLURL(),
+							"state", existingPr.GetState())
+						return existingPr.GetHTMLURL(), nil
+					}
+				}
+			}
+			return "", fmt.Errorf("PR already exists but couldn't find it: %w", err)
+		}
 		return "", fmt.Errorf("failed to create pull request: %w", err)
 	}
 
