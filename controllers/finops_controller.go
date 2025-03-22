@@ -90,7 +90,7 @@ func (r *FinOpsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		duration, err := time.ParseDuration(schedule)
 		if err != nil {
 			log.Error(err, "Failed to parse schedule duration", "schedule", schedule)
-			return ctrl.Result{}, err
+			return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil // Always requeue even on error
 		}
 		requeueAfter = duration
 	} else {
@@ -116,7 +116,7 @@ func (r *FinOpsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if err != nil {
 			log.Error(err, "Failed to get VPA recommendation")
 			r.Recorder.Event(&finops, corev1.EventTypeWarning, "FetchFailed", "Failed to fetch VPA recommendation")
-			return ctrl.Result{RequeueAfter: requeueAfter}, err
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil // Always requeue at next scheduled time
 		}
 
 		// Get Git credentials
@@ -124,7 +124,7 @@ func (r *FinOpsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if err != nil {
 			log.Error(err, "Failed to get Git credentials")
 			r.Recorder.Event(&finops, corev1.EventTypeWarning, "AuthFailed", "Failed to get GitHub credentials")
-			return ctrl.Result{RequeueAfter: requeueAfter}, err
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil // Always requeue at next scheduled time
 		}
 
 		// Update GitHub repository
@@ -132,7 +132,7 @@ func (r *FinOpsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if err != nil {
 			log.Error(err, "Failed to update GitHub repository")
 			r.Recorder.Event(&finops, corev1.EventTypeWarning, "GitHubUpdateFailed", "Failed to update GitHub repository")
-			return ctrl.Result{RequeueAfter: requeueAfter}, err
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil // Always requeue at next scheduled time
 		}
 
 		// Update status
@@ -143,12 +143,13 @@ func (r *FinOpsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 		if err := r.Status().Update(ctx, &finops); err != nil {
 			log.Error(err, "Failed to update FinOps status")
-			return ctrl.Result{RequeueAfter: requeueAfter}, err
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil // Always requeue at next scheduled time
 		}
 
 		r.Recorder.Event(&finops, corev1.EventTypeNormal, "Reconciled", "Successfully updated GitHub repository with new VPA recommendations")
 	}
 
+	// Always requeue after the scheduled time
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
